@@ -1,0 +1,7 @@
+# Windows 批次檔必須用 CRLF，否則 cmd 解析錯誤
+*.bat text eol=crlf
+
+# 其餘文字檔用 LF
+*.py  text eol=lf
+*.txt text eol=lf
+*.md  text eol=lf

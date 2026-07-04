@@ -1,0 +1,22 @@
+# 作者的原程式（絕不可上傳，會破壞「不含原程式」的聲明）
+NTE-Drive-Calc-main/
+
+# 更新時暫存的使用者掃描資料（個人資料，不上傳）
+_accounts_backup/
+
+# 簡體原版備份（轉繁時產生）
+_backup_簡體原版/
+
+# Python 快取
+__pycache__/
+*.pyc
+
+# 下載暫存
+*.zip
+nte_src.zip
+
+# 使用者本機設定 / 版本標記（每台不同，不上傳）
+控制台設定.json
+_patch_commit.txt
+_installed_commit.txt
+nte_pylist.txt
