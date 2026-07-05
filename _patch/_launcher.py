@@ -190,6 +190,91 @@ def _patch_ocr_normalization():
 _patch_ocr_normalization()
 
 
+# ── 識別失敗診斷記錄 ────────────────────────────────────────
+# 「貼圖鑑定」識別不到時（OCR 湊不滿 4 條有效副屬性 → 整張作廢），
+# 原程式只把細節記在 DEBUG，而檔案 log 只收 INFO 以上，等於失敗現場
+# 完全沒留痕跡，事後根本無法診斷（例如朋友那 6 張圖為何在他機器上讀不出來，
+# 同樣的圖在別台卻正常）。這裡：
+#   ① 另開一個專用檔案 sink，只收「識別失敗」訊息 → logs/識別失敗紀錄.log
+#   ② 包住鑑定入口 BatchProcessor.parse_identify_items，識別不到時把該圖的
+#      OCR 逐行原文 dump 進去。一看就知道 OCR 到底讀成什麼、卡在哪一條，
+#      要不要補進 _launcher 的誤字修正表都能直接判斷。控制台可一鍵檢視此檔。
+def _patch_identify_failure_logging():
+    try:
+        import src.scanner.batch_processor as _bp
+        from src.utils.logger import logger, LOG_DIR
+        from src.utils.image_io import imread_unicode
+        from src.scanner.window_capture import crop_window_border_from_image
+    except Exception as e:
+        print("（識別失敗記錄未啟用：", e, "）")
+        return
+
+    fail_log = Path(LOG_DIR) / "識別失敗紀錄.log"
+    try:
+        logger.add(
+            str(fail_log),
+            level="INFO",
+            filter=lambda r: r["extra"].get("nte_identify_fail"),
+            format="{time:YYYY-MM-DD HH:mm:ss} | {message}",
+            rotation="2 MB",
+            retention="14 days",
+            encoding="utf-8",
+        )
+    except Exception as e:
+        print("（識別失敗記錄檔建立失敗：", e, "）")
+        return
+    _flog = logger.bind(nte_identify_fail=True)
+
+    def _dump_ocr(self, image_path):
+        """把該圖 OCR 逐行原文抓出來（識別失敗時用來看 OCR 讀成什麼）。"""
+        try:
+            img = imread_unicode(image_path)
+            if img is None:
+                return ["<影像損壞或無法讀取>"]
+            img = crop_window_border_from_image(img)
+            out = []
+            for d in self.ocr_engine.extract_lines(img):
+                t = str(d.get("text", "") if isinstance(d, dict) else d).strip()
+                if t:
+                    out.append(t)
+            return out or ["<OCR 沒有讀到任何文字>"]
+        except Exception as e:
+            return [f"<OCR dump 失敗：{e}>"]
+
+    _orig = _bp.BatchProcessor.parse_identify_items
+
+    def _wrapped(self, image_path, *args, **kwargs):
+        items = _orig(self, image_path, *args, **kwargs)
+        try:
+            name = Path(str(image_path)).name
+            if items:
+                subs = ", ".join(
+                    f"{getattr(it, 'item_type', '?')}×{len(getattr(it, 'sub_stats', {}) or {})}條"
+                    for it in items
+                )
+                _flog.info(f"[OK] 識別成功  {name}  → {subs}")
+            else:
+                texts = _dump_ocr(self, image_path)
+                block = "\n".join(f"    {i + 1:>2}. {t}" for i, t in enumerate(texts))
+                _flog.info(
+                    f"[X] 識別失敗  {name}\n"
+                    f"  研判：OCR 湊不滿 4 條有效副屬性，或詞條對不上繁體 config。\n"
+                    f"  OCR 實際讀到（共 {len(texts)} 行）：\n{block}\n"
+                    f"  ── 對照上面文字找出被誤讀/漏字的那條，必要時補進 _launcher 的誤字修正表 ──"
+                )
+        except Exception as e:
+            try:
+                _flog.info(f"（識別失敗記錄本身出錯：{e}）")
+            except Exception:
+                pass
+        return items
+
+    _bp.BatchProcessor.parse_identify_items = _wrapped
+
+
+_patch_identify_failure_logging()
+
+
 # ── 開機時檢查作者是否有新版（比對 GitHub main 最新 commit）──
 # 安裝時 一鍵安裝.bat 會把當下的 commit 記到 _installed_commit.txt，
 # 這裡比對線上最新 commit，不同就提示。離線/失敗都靜默跳過。

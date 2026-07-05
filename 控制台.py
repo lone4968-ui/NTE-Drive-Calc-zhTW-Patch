@@ -135,6 +135,33 @@ def is_traditional(root):
         return False
 
 
+FAIL_LOG_NAME = "識別失敗紀錄.log"      # 由 _launcher.py 的失敗記錄鉤子寫入
+RUNTIME_LOG_NAME = "nte_runtime.log"
+
+
+def log_dir_candidates(prog):
+    """回傳可能存放 log 的資料夾（順序＝ _launcher/logger 的挑選順序）。"""
+    cands = []
+    if prog:
+        cands.append(Path(prog) / "logs")
+    la = os.environ.get("LOCALAPPDATA")
+    if la:
+        cands.append(Path(la) / "NTE Drive Calc" / "logs")
+    tmp = os.environ.get("TEMP")
+    if tmp:
+        cands.append(Path(tmp) / "NTE_Drive_Calc_logs")
+    return cands
+
+
+def find_log(prog, name):
+    """找出實際存在的 log 檔；找不到就回傳 None。"""
+    for d in log_dir_candidates(prog):
+        f = d / name
+        if f.exists():
+            return f
+    return None
+
+
 PREF_FILE = HERE / "控制台設定.json"
 
 
@@ -209,6 +236,10 @@ class Console:
             self._btn(grid, _t, _c, CARD).grid(row=_r, column=_col, sticky="ew", padx=3, pady=3)
         grid.columnconfigure(0, weight=1, uniform="btn")
         grid.columnconfigure(1, weight=1, uniform="btn")
+
+        # 失敗紀錄（貼圖鑑定識別不到時，看 OCR 到底讀成什麼）
+        self._btn(bf, "📋 檢視識別失敗紀錄（貼圖鑑定失敗時看這裡）",
+                  self.act_failure_log, CARD).pack(fill="x", pady=(3, 0))
 
         # 自動啟動開關
         self.auto_var = tk.BooleanVar(value=bool(self._pref.get("auto_launch", False)))
@@ -561,6 +592,121 @@ class Console:
         txt.pack(side="left", fill="both", expand=True)
         txt.insert("1.0", text)
         txt.config(state="disabled")
+
+    # -- 失敗紀錄 --
+    def act_failure_log(self):
+        win = tk.Toplevel(self.root)
+        win.title("識別失敗紀錄")
+        win.configure(bg=BG)
+        win.geometry("760x600")
+        win.minsize(560, 420)
+
+        # 說明列
+        tk.Label(win,
+                 text="「貼圖鑑定」識別不到裝備時，這裡會記下那張圖 OCR 實際讀到的每一行文字。",
+                 bg=BG, fg=MUTED, anchor="w", wraplength=720, justify="left",
+                 font=("Microsoft JhengHei UI", 9)).pack(fill="x", padx=14, pady=(12, 2))
+
+        # 工具列
+        bar = tk.Frame(win, bg=BG)
+        bar.pack(fill="x", padx=12, pady=(4, 4))
+        self._btn(bar, "🔄 重新整理", lambda: self._load_failure_log(txt),
+                  CARD).pack(side="left", padx=(0, 4))
+        self._btn(bar, "📂 開啟 logs 資料夾", self._open_logs_dir,
+                  CARD).pack(side="left", padx=4)
+        self._btn(bar, "📋 複製全部", lambda: self._copy_text(win, txt),
+                  CARD).pack(side="left", padx=4)
+        self._btn(bar, "🗑 清空紀錄", lambda: self._clear_failure_log(txt),
+                  CARD).pack(side="left", padx=4)
+
+        # 內文
+        wrap = tk.Frame(win, bg=CARD)
+        wrap.pack(side="left", fill="both", expand=True, padx=12, pady=(0, 12))
+        txt = tk.Text(wrap, bg=CARD, fg=TEXT, wrap="word", bd=0,
+                      font=("Consolas", 10), padx=12, pady=10,
+                      insertbackground=TEXT)
+        sb = tk.Scrollbar(wrap, command=txt.yview)
+        txt.config(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        txt.pack(side="left", fill="both", expand=True)
+        txt.tag_config("fail", foreground=BAD)
+        txt.tag_config("ok", foreground=OK)
+        txt.tag_config("muted", foreground=MUTED)
+        self._load_failure_log(txt)
+
+    def _load_failure_log(self, txt):
+        f = find_log(self.prog, FAIL_LOG_NAME)
+        txt.config(state="normal")
+        txt.delete("1.0", "end")
+        if not f:
+            txt.insert("1.0",
+                       "目前沒有任何識別失敗紀錄。\n\n"
+                       "怎麼產生：\n"
+                       "  1. 點上面「🚀 啟動程式」開啟主程式\n"
+                       "  2. 進「貼圖鑑定」，把讀不出來的那幾張圖貼進去鑑定\n"
+                       "  3. 識別失敗時會自動記錄那張圖 OCR 讀到的文字\n"
+                       "  4. 回到這裡按「🔄 重新整理」即可看到\n\n"
+                       "（紀錄檔會存在主程式的 logs 資料夾，檔名："
+                       + FAIL_LOG_NAME + "）",
+                       "muted")
+            txt.config(state="disabled")
+            return
+        try:
+            lines = f.read_text(encoding="utf-8", errors="replace").splitlines()
+        except Exception as e:
+            txt.insert("1.0", f"讀取失敗：{e}", "muted")
+            txt.config(state="disabled")
+            return
+        if not lines:
+            txt.insert("1.0", "紀錄檔是空的（還沒有失敗過）。", "muted")
+            txt.config(state="disabled")
+            return
+        # 太長只顯示最後 1200 行，避免卡頓
+        if len(lines) > 1200:
+            txt.insert("end", f"（紀錄較長，只顯示最後 1200 行；完整內容請開 logs 資料夾）\n\n", "muted")
+            lines = lines[-1200:]
+        for ln in lines:
+            tag = "fail" if "識別失敗" in ln or "[X]" in ln else \
+                  ("ok" if "識別成功" in ln or "[OK]" in ln else None)
+            txt.insert("end", ln + "\n", tag or ())
+        txt.see("end")
+        txt.config(state="disabled")
+
+    def _open_logs_dir(self):
+        for d in log_dir_candidates(self.prog):
+            if d.exists():
+                try:
+                    os.startfile(str(d))
+                except Exception as e:
+                    self.status.set(f"開啟資料夾失敗：{e}")
+                return
+        self.status.set("還沒有 logs 資料夾（先啟動一次程式）。")
+
+    def _copy_text(self, win, txt):
+        try:
+            win.clipboard_clear()
+            win.clipboard_append(txt.get("1.0", "end-1c"))
+            self.status.set("已複製失敗紀錄到剪貼簿。")
+        except Exception as e:
+            self.status.set(f"複製失敗：{e}")
+
+    def _clear_failure_log(self, txt):
+        f = find_log(self.prog, FAIL_LOG_NAME)
+        if not f:
+            self.status.set("沒有可清空的紀錄。")
+            return
+        import ctypes
+        r = ctypes.windll.user32.MessageBoxW(
+            0, "確定要清空識別失敗紀錄嗎？（只刪紀錄，不影響任何掃描資料）",
+            "清空紀錄", 0x4 | 0x30 | 0x1000)
+        if r != 6:  # 非 IDYES
+            return
+        try:
+            f.write_text("", encoding="utf-8")
+            self.status.set("已清空識別失敗紀錄。")
+        except Exception as e:
+            self.status.set(f"清空失敗：{e}")
+        self._load_failure_log(txt)
 
     # -- 自動啟動 --
     def _on_toggle(self):
