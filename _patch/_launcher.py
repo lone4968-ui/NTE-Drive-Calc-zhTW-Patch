@@ -190,23 +190,24 @@ def _patch_ocr_normalization():
 _patch_ocr_normalization()
 
 
-# ── 識別失敗診斷記錄 ────────────────────────────────────────
-# 「貼圖鑑定」識別不到時（OCR 湊不滿 4 條有效副屬性 → 整張作廢），
+# ── 解析／鑑定失敗診斷記錄 ──────────────────────────────────
+# 圖片解析失敗時（OCR 湊不滿 4 條有效副屬性 → 整張作廢/移到 failed），
 # 原程式只把細節記在 DEBUG，而檔案 log 只收 INFO 以上，等於失敗現場
 # 完全沒留痕跡，事後根本無法診斷（例如朋友那 6 張圖為何在他機器上讀不出來，
-# 同樣的圖在別台卻正常）。這裡：
-#   ① 另開一個專用檔案 sink，只收「識別失敗」訊息 → logs/識別失敗紀錄.log
-#   ② 包住鑑定入口 BatchProcessor.parse_identify_items，識別不到時把該圖的
-#      OCR 逐行原文 dump 進去。一看就知道 OCR 到底讀成什麼、卡在哪一條，
-#      要不要補進 _launcher 的誤字修正表都能直接判斷。控制台可一鍵檢視此檔。
-def _patch_identify_failure_logging():
+# 同樣的圖在別台卻正常）。這裡開一個專用檔案 sink（logs/識別失敗紀錄.log），
+# 並同時攔兩條會失敗的路，把該圖 OCR 逐行原文 dump 進去：
+#   ① 截圖鑑定：BatchProcessor.parse_identify_items 回傳空 → 記失敗
+#   ② 全量解析：BatchProcessor.process_image_file 拋例外（不足 4 條）→ 記失敗
+# 一看就知道 OCR 到底讀成什麼、卡在哪一條，要不要補進誤字修正表可直接判斷。
+# 控制台可一鍵檢視此檔。
+def _patch_failure_logging():
     try:
         import src.scanner.batch_processor as _bp
         from src.utils.logger import logger, LOG_DIR
         from src.utils.image_io import imread_unicode
         from src.scanner.window_capture import crop_window_border_from_image
     except Exception as e:
-        print("（識別失敗記錄未啟用：", e, "）")
+        print("（失敗記錄未啟用：", e, "）")
         return
 
     fail_log = Path(LOG_DIR) / "識別失敗紀錄.log"
@@ -221,12 +222,12 @@ def _patch_identify_failure_logging():
             encoding="utf-8",
         )
     except Exception as e:
-        print("（識別失敗記錄檔建立失敗：", e, "）")
+        print("（失敗記錄檔建立失敗：", e, "）")
         return
     _flog = logger.bind(nte_identify_fail=True)
 
     def _dump_ocr(self, image_path):
-        """把該圖 OCR 逐行原文抓出來（識別失敗時用來看 OCR 讀成什麼）。"""
+        """把該圖 OCR 逐行原文抓出來（失敗時用來看 OCR 讀成什麼）。"""
         try:
             img = imread_unicode(image_path)
             if img is None:
@@ -241,38 +242,59 @@ def _patch_identify_failure_logging():
         except Exception as e:
             return [f"<OCR dump 失敗：{e}>"]
 
-    _orig = _bp.BatchProcessor.parse_identify_items
-
-    def _wrapped(self, image_path, *args, **kwargs):
-        items = _orig(self, image_path, *args, **kwargs)
+    def _log_fail(self, image_path, source, reason):
         try:
             name = Path(str(image_path)).name
+            texts = _dump_ocr(self, image_path)
+            block = "\n".join(f"    {i + 1:>2}. {t}" for i, t in enumerate(texts))
+            _flog.info(
+                f"[X] {source}失敗  {name}\n"
+                f"  原因：{reason}\n"
+                f"  OCR 實際讀到（共 {len(texts)} 行）：\n{block}\n"
+                f"  ── 對照上面文字找出被誤讀/漏字的那條，必要時補進 _launcher 的誤字修正表 ──"
+            )
+        except Exception:
+            pass
+
+    # ① 截圖鑑定（貼圖／解析圖片）：識別不到＝回傳空 items
+    _orig_id = _bp.BatchProcessor.parse_identify_items
+
+    def _wrapped_id(self, image_path, *args, **kwargs):
+        items = _orig_id(self, image_path, *args, **kwargs)
+        try:
             if items:
                 subs = ", ".join(
                     f"{getattr(it, 'item_type', '?')}×{len(getattr(it, 'sub_stats', {}) or {})}條"
                     for it in items
                 )
-                _flog.info(f"[OK] 識別成功  {name}  → {subs}")
+                _flog.info(f"[OK] 截圖鑑定成功  {Path(str(image_path)).name}  → {subs}")
             else:
-                texts = _dump_ocr(self, image_path)
-                block = "\n".join(f"    {i + 1:>2}. {t}" for i, t in enumerate(texts))
-                _flog.info(
-                    f"[X] 識別失敗  {name}\n"
-                    f"  研判：OCR 湊不滿 4 條有效副屬性，或詞條對不上繁體 config。\n"
-                    f"  OCR 實際讀到（共 {len(texts)} 行）：\n{block}\n"
-                    f"  ── 對照上面文字找出被誤讀/漏字的那條，必要時補進 _launcher 的誤字修正表 ──"
-                )
-        except Exception as e:
-            try:
-                _flog.info(f"（識別失敗記錄本身出錯：{e}）")
-            except Exception:
-                pass
+                _log_fail(self, image_path, "截圖鑑定",
+                          "OCR 湊不滿 4 條有效副屬性，或詞條對不上繁體 config")
+        except Exception:
+            pass
         return items
+
+    _bp.BatchProcessor.parse_identify_items = _wrapped_id
+
+    # ② 全量解析（主程式「全部截圖解析」／自動掃描）：失敗＝process_image_file 拋例外
+    #    （duplicate_filter.process_image_file 在不足 4 條有效副屬性時 raise，
+    #     那張圖會被移到 failed 資料夾）。這裡攔下來記 OCR 原文後再原樣拋出，不改行為。
+    _orig_pf = _bp.BatchProcessor.process_image_file
+
+    def _wrapped_pf(self, image_path, filename=None, *args, **kwargs):
+        try:
+            return _orig_pf(self, image_path, filename, *args, **kwargs)
+        except Exception as exc:
+            _log_fail(self, image_path, "全量解析", exc)
+            raise
+
+    _bp.BatchProcessor.process_image_file = _wrapped_pf
 
     _bp.BatchProcessor.parse_identify_items = _wrapped
 
 
-_patch_identify_failure_logging()
+_patch_failure_logging()
 
 
 # ── 開機時檢查作者是否有新版（比對 GitHub main 最新 commit）──

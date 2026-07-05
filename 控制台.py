@@ -242,8 +242,8 @@ class Console:
         grid.columnconfigure(0, weight=1, uniform="btn")
         grid.columnconfigure(1, weight=1, uniform="btn")
 
-        # 失敗紀錄（貼圖鑑定識別不到時，看 OCR 到底讀成什麼）
-        self._btn(bf, "📋 檢視識別失敗紀錄（貼圖鑑定失敗時看這裡）",
+        # 失敗紀錄（全量解析/截圖鑑定失敗時，看 OCR 到底讀成什麼）
+        self._btn(bf, "📋 檢視解析失敗紀錄（全量解析／截圖鑑定失敗看這裡）",
                   self.act_failure_log, CARD).pack(fill="x", pady=(3, 0))
 
         # 自動啟動開關
@@ -441,6 +441,16 @@ class Console:
                     bat.write_bytes(raw)
                 except Exception:
                     pass
+            # 把 _patch 內的程式端檔案(_launcher.py 等)佈署進主程式資料夾。
+            # 否則更新補丁只更到 _patch/，實際在跑的程式仍是舊 _launcher，
+            # 失敗記錄等「程式端」功能永遠不會生效（朋友按更新補丁也拿不到）。
+            prog = find_program_root()
+            if prog:
+                for f in list((HERE / "_patch").glob("*.py")) + list((HERE / "_patch").glob("*.bat")):
+                    try:
+                        shutil.copy2(f, prog / f.name)
+                    except Exception:
+                        pass
             # 更新本地版本基準
             try:
                 sha, _ = gh_latest(PATCH_REPO)
@@ -681,7 +691,7 @@ class Console:
 
         # 說明列
         tk.Label(win,
-                 text="「貼圖鑑定」識別不到裝備時，這裡會記下那張圖 OCR 實際讀到的每一行文字。",
+                 text="「全量解析」或「截圖鑑定」讀不出裝備時，這裡會記下那張圖 OCR 實際讀到的每一行文字。",
                  bg=BG, fg=MUTED, anchor="w", wraplength=720, justify="left",
                  font=("Microsoft JhengHei UI", 9)).pack(fill="x", padx=14, pady=(12, 2))
 
@@ -718,11 +728,11 @@ class Console:
         txt.delete("1.0", "end")
         if not f:
             txt.insert("1.0",
-                       "目前沒有任何識別失敗紀錄。\n\n"
+                       "目前沒有任何解析失敗紀錄。\n\n"
                        "怎麼產生：\n"
                        "  1. 點上面「🚀 啟動程式」開啟主程式\n"
-                       "  2. 進「貼圖鑑定」，把讀不出來的那幾張圖貼進去鑑定\n"
-                       "  3. 識別失敗時會自動記錄那張圖 OCR 讀到的文字\n"
+                       "  2. 跑「全量解析」或用「截圖鑑定」把讀不出來的那幾張圖跑一次\n"
+                       "  3. 解析失敗時會自動記錄那張圖 OCR 讀到的文字\n"
                        "  4. 回到這裡按「🔄 重新整理」即可看到\n\n"
                        "（紀錄檔會存在主程式的 logs 資料夾，檔名："
                        + FAIL_LOG_NAME + "）",
