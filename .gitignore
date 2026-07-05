@@ -3,6 +3,9 @@ NTE-Drive-Calc-main/
 
 # 更新時暫存的使用者掃描資料（個人資料，不上傳）
 _accounts_backup/
+_accounts_backup_old/
+# 控制台「更新主程式」前自動備份的 accounts（個人資料，不上傳）
+_控制台自動備份/
 
 # 簡體原版備份（轉繁時產生）
 _backup_簡體原版/
