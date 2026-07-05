@@ -79,36 +79,75 @@ if errorlevel 1 (
     exit /b
 )
 
-rem --- preserve user data (accounts) across update ---
-if exist "%DATABK%" rmdir /s /q "%DATABK%"
+rem ================= preserve user data (accounts) =================
+rem SAFETY: never delete a backup blindly - a leftover backup may be the ONLY
+rem copy left if a previous update failed to restore. Keep it aside as _old.
+if exist "%DATABK%" (
+    if exist "%DATABK%_old" rmdir /s /q "%DATABK%_old"
+    move "%DATABK%" "%DATABK%_old" >nul 2>&1
+)
+
+rem Move current scan data out to the backup, then VERIFY it actually moved.
+rem If it didn't move (program still locking a file), ABORT before deleting anything.
 if exist "%TARGET%\accounts" (
-    move "%TARGET%\accounts" "%DATABK%" >nul
-    echo [i] Existing scan data detected - it will be kept.
+    move "%TARGET%\accounts" "%DATABK%" >nul 2>&1
+    if not exist "%DATABK%" (
+        echo.
+        echo [X] Could not back up your scan data ^(the program may still be running^).
+        echo     Update ABORTED on purpose - NOTHING was deleted, your data is intact.
+        echo     Please fully close the program AND the console, then run this again.
+        if exist "%DATABK%_old" move "%DATABK%_old" "%DATABK%" >nul 2>&1
+        pause
+        exit /b
+    )
+    echo [i] Existing scan data safely backed up.
 )
 
 echo [2/5] Extracting...
-if exist "%TARGET%" rmdir /s /q "%TARGET%"
+rem Try to remove the old program folder (accounts are already moved out and verified).
+if exist "%TARGET%" rmdir /s /q "%TARGET%" 2>nul
 if exist "%TARGET%\main.py" (
     echo.
-    echo [X] The program seems to be RUNNING - cannot update now.
+    echo [X] The program is still RUNNING - cannot replace it.
     echo     Please CLOSE the program window first, then run this again.
+    rem roll back: put data back where it was
     if exist "%DATABK%" move "%DATABK%" "%TARGET%\accounts" >nul 2>&1
+    if exist "%DATABK%_old" move "%DATABK%_old" "%DATABK%" >nul 2>&1
     pause
     exit /b
 )
 powershell -Command "Expand-Archive -Path '%SRCZIP%' -DestinationPath '%~dp0' -Force"
 if not exist "%TARGET%\main.py" (
     echo [X] Extract failed or unexpected structure.
+    rem roll back: put data back so it is never lost
     if exist "%DATABK%" move "%DATABK%" "%TARGET%\accounts" >nul 2>&1
+    if exist "%DATABK%_old" move "%DATABK%_old" "%DATABK%" >nul 2>&1
     pause
     exit /b
 )
 
-rem --- restore user data ---
+rem ---- restore user data (and VERIFY) ----
 if exist "%DATABK%" (
     if exist "%TARGET%\accounts" rmdir /s /q "%TARGET%\accounts"
-    move "%DATABK%" "%TARGET%\accounts" >nul
-    echo [i] Your scan data has been restored.
+    move "%DATABK%" "%TARGET%\accounts" >nul 2>&1
+    if exist "%TARGET%\accounts" (
+        echo [i] Your scan data has been restored.
+        if exist "%DATABK%_old" rmdir /s /q "%DATABK%_old"
+    ) else (
+        echo.
+        echo [X] Could not auto-restore scan data - but DON'T WORRY, it is SAFE at:
+        echo     %DATABK%
+        echo     Manually move the "default" folder inside it into:
+        echo     %TARGET%\accounts\
+        echo.
+        pause
+    )
+)
+rem A leftover backup from a PREVIOUS failed update - keep it, just inform.
+if exist "%DATABK%_old" (
+    echo [!] A backup from a previous update was kept at:
+    echo     %DATABK%_old
+    echo     If your data looks complete now, you may delete that folder later.
 )
 
 rem ---- 3) copy patch files from _patch into program folder ----
